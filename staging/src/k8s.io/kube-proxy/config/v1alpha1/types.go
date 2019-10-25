@@ -51,14 +51,14 @@ type KubeProxyIPVSConfiguration struct {
 	// excludeCIDRs is a list of CIDR's which the ipvs proxier should not touch
 	// when cleaning up ipvs services.
 	ExcludeCIDRs []string `json:"excludeCIDRs"`
+	// strict ARP configure arp_ignore and arp_announce to avoid answering ARP queries
+	// from kube-ipvs0 interface
+	StrictARP bool `json:"strictARP"`
 }
 
 // KubeProxyConntrackConfiguration contains conntrack settings for
 // the Kubernetes proxy server.
 type KubeProxyConntrackConfiguration struct {
-	// max is the maximum number of NAT connections to track (0 to
-	// leave as-is).  This takes precedence over maxPerCore and min.
-	Max *int32 `json:"max"`
 	// maxPerCore is the maximum number of NAT connections to track
 	// per CPU core (0 to leave the limit as-is and ignore min).
 	MaxPerCore *int32 `json:"maxPerCore"`
@@ -72,6 +72,20 @@ type KubeProxyConntrackConfiguration struct {
 	// in CLOSE_WAIT state will remain in the conntrack
 	// table. (e.g. '60s'). Must be greater than 0 to set.
 	TCPCloseWaitTimeout *metav1.Duration `json:"tcpCloseWaitTimeout"`
+}
+
+// KubeProxyWinkernelConfiguration contains Windows/HNS settings for
+// the Kubernetes proxy server.
+type KubeProxyWinkernelConfiguration struct {
+	// networkName is the name of the network kube-proxy will use
+	// to create endpoints and policies
+	NetworkName string `json:"networkName"`
+	// sourceVip is the IP address of the source VIP endoint used for
+	// NAT when loadbalancing
+	SourceVip string `json:"sourceVip"`
+	// enableDSR tells kube-proxy whether HNS policies should be created
+	// with DSR
+	EnableDSR bool `json:"enableDSR"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -117,9 +131,6 @@ type KubeProxyConfiguration struct {
 	// portRange is the range of host ports (beginPort-endPort, inclusive) that may be consumed
 	// in order to proxy service traffic. If unspecified (0-0) then ports will be randomly chosen.
 	PortRange string `json:"portRange"`
-	// resourceContainer is the bsolute name of the resource-only container to create and run
-	// the Kube-proxy in (Default: /kube-proxy).
-	ResourceContainer string `json:"resourceContainer"`
 	// udpIdleTimeout is how long an idle UDP connection will be kept open (e.g. '250ms', '2s').
 	// Must be greater than 0. Only applicable for proxyMode=userspace.
 	UDPIdleTimeout metav1.Duration `json:"udpIdleTimeout"`
@@ -136,6 +147,8 @@ type KubeProxyConfiguration struct {
 	// If set it to a non-zero IP block, kube-proxy will filter that down to just the IPs that applied to the node.
 	// An empty string slice is meant to select all network interfaces.
 	NodePortAddresses []string `json:"nodePortAddresses"`
+	// winkernel contains winkernel-related configuration options.
+	Winkernel KubeProxyWinkernelConfiguration `json:"winkernel"`
 }
 
 // Currently, three modes of proxy are available in Linux platform: 'userspace' (older, going to be EOL), 'iptables'

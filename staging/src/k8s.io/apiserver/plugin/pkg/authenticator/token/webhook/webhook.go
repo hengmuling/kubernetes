@@ -19,6 +19,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	authentication "k8s.io/api/authentication/v1beta1"
@@ -97,10 +98,10 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token
 		err    error
 		auds   authenticator.Audiences
 	)
-	webhook.WithExponentialBackoff(w.initialBackoff, func() error {
-		result, err = w.tokenReview.Create(r)
+	webhook.WithExponentialBackoff(ctx, w.initialBackoff, func() error {
+		result, err = w.tokenReview.CreateContext(ctx, r)
 		return err
-	})
+	}, webhook.DefaultShouldRetry)
 	if err != nil {
 		// An error here indicates bad configuration or an outage. Log for debugging.
 		klog.Errorf("Failed to make webhook authenticator request: %v", err)
@@ -120,7 +121,11 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token
 
 	r.Status = result.Status
 	if !r.Status.Authenticated {
-		return nil, false, nil
+		var err error
+		if len(r.Status.Error) != 0 {
+			err = errors.New(r.Status.Error)
+		}
+		return nil, false, err
 	}
 
 	var extra map[string][]string
@@ -166,7 +171,11 @@ type tokenReviewClient struct {
 }
 
 func (t *tokenReviewClient) Create(tokenReview *authentication.TokenReview) (*authentication.TokenReview, error) {
+	return t.CreateContext(context.Background(), tokenReview)
+}
+
+func (t *tokenReviewClient) CreateContext(ctx context.Context, tokenReview *authentication.TokenReview) (*authentication.TokenReview, error) {
 	result := &authentication.TokenReview{}
-	err := t.w.RestClient.Post().Body(tokenReview).Do().Into(result)
+	err := t.w.RestClient.Post().Context(ctx).Body(tokenReview).Do().Into(result)
 	return result, err
 }

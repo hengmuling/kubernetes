@@ -22,23 +22,24 @@ import (
 	"fmt"
 	"net"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	apiserverflag "k8s.io/apiserver/pkg/util/flag"
 	clientset "k8s.io/client-go/kubernetes"
 	clientgokubescheme "k8s.io/client-go/kubernetes/scheme"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
+	cliflag "k8s.io/component-base/cli/flag"
 	kubectrlmgrconfigv1alpha1 "k8s.io/kube-controller-manager/config/v1alpha1"
 	cmoptions "k8s.io/kubernetes/cmd/controller-manager/app/options"
 	kubecontrollerconfig "k8s.io/kubernetes/cmd/kube-controller-manager/app/config"
 	kubectrlmgrconfig "k8s.io/kubernetes/pkg/controller/apis/config"
 	kubectrlmgrconfigscheme "k8s.io/kubernetes/pkg/controller/apis/config/scheme"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
+	garbagecollectorconfig "k8s.io/kubernetes/pkg/controller/garbagecollector/config"
 	"k8s.io/kubernetes/pkg/master/ports"
 
 	// add the kubernetes feature gates
@@ -62,8 +63,10 @@ type KubeControllerManagerOptions struct {
 	CSRSigningController             *CSRSigningControllerOptions
 	DaemonSetController              *DaemonSetControllerOptions
 	DeploymentController             *DeploymentControllerOptions
+	StatefulSetController            *StatefulSetControllerOptions
 	DeprecatedFlags                  *DeprecatedControllerOptions
 	EndpointController               *EndpointControllerOptions
+	EndpointSliceController          *EndpointSliceControllerOptions
 	GarbageCollectorController       *GarbageCollectorControllerOptions
 	HPAController                    *HPAControllerOptions
 	JobController                    *JobControllerOptions
@@ -96,84 +99,73 @@ func NewKubeControllerManagerOptions() (*KubeControllerManagerOptions, error) {
 	}
 
 	s := KubeControllerManagerOptions{
-		Generic:         cmoptions.NewGenericControllerManagerConfigurationOptions(componentConfig.Generic),
-		KubeCloudShared: cmoptions.NewKubeCloudSharedOptions(componentConfig.KubeCloudShared),
+		Generic:         cmoptions.NewGenericControllerManagerConfigurationOptions(&componentConfig.Generic),
+		KubeCloudShared: cmoptions.NewKubeCloudSharedOptions(&componentConfig.KubeCloudShared),
+		ServiceController: &cmoptions.ServiceControllerOptions{
+			ServiceControllerConfiguration: &componentConfig.ServiceController,
+		},
 		AttachDetachController: &AttachDetachControllerOptions{
-			ReconcilerSyncLoopPeriod: componentConfig.AttachDetachController.ReconcilerSyncLoopPeriod,
+			&componentConfig.AttachDetachController,
 		},
 		CSRSigningController: &CSRSigningControllerOptions{
-			ClusterSigningCertFile: componentConfig.CSRSigningController.ClusterSigningCertFile,
-			ClusterSigningKeyFile:  componentConfig.CSRSigningController.ClusterSigningKeyFile,
-			ClusterSigningDuration: componentConfig.CSRSigningController.ClusterSigningDuration,
+			&componentConfig.CSRSigningController,
 		},
 		DaemonSetController: &DaemonSetControllerOptions{
-			ConcurrentDaemonSetSyncs: componentConfig.DaemonSetController.ConcurrentDaemonSetSyncs,
+			&componentConfig.DaemonSetController,
 		},
 		DeploymentController: &DeploymentControllerOptions{
-			ConcurrentDeploymentSyncs:      componentConfig.DeploymentController.ConcurrentDeploymentSyncs,
-			DeploymentControllerSyncPeriod: componentConfig.DeploymentController.DeploymentControllerSyncPeriod,
+			&componentConfig.DeploymentController,
+		},
+		StatefulSetController: &StatefulSetControllerOptions{
+			&componentConfig.StatefulSetController,
 		},
 		DeprecatedFlags: &DeprecatedControllerOptions{
-			RegisterRetryCount: componentConfig.DeprecatedController.RegisterRetryCount,
+			&componentConfig.DeprecatedController,
 		},
 		EndpointController: &EndpointControllerOptions{
-			ConcurrentEndpointSyncs: componentConfig.EndpointController.ConcurrentEndpointSyncs,
+			&componentConfig.EndpointController,
+		},
+		EndpointSliceController: &EndpointSliceControllerOptions{
+			&componentConfig.EndpointSliceController,
 		},
 		GarbageCollectorController: &GarbageCollectorControllerOptions{
-			ConcurrentGCSyncs:      componentConfig.GarbageCollectorController.ConcurrentGCSyncs,
-			EnableGarbageCollector: componentConfig.GarbageCollectorController.EnableGarbageCollector,
+			&componentConfig.GarbageCollectorController,
 		},
 		HPAController: &HPAControllerOptions{
-			HorizontalPodAutoscalerSyncPeriod:                   componentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod,
-			HorizontalPodAutoscalerUpscaleForbiddenWindow:       componentConfig.HPAController.HorizontalPodAutoscalerUpscaleForbiddenWindow,
-			HorizontalPodAutoscalerDownscaleForbiddenWindow:     componentConfig.HPAController.HorizontalPodAutoscalerDownscaleForbiddenWindow,
-			HorizontalPodAutoscalerDownscaleStabilizationWindow: componentConfig.HPAController.HorizontalPodAutoscalerDownscaleStabilizationWindow,
-			HorizontalPodAutoscalerCPUInitializationPeriod:      componentConfig.HPAController.HorizontalPodAutoscalerCPUInitializationPeriod,
-			HorizontalPodAutoscalerInitialReadinessDelay:        componentConfig.HPAController.HorizontalPodAutoscalerInitialReadinessDelay,
-			HorizontalPodAutoscalerTolerance:                    componentConfig.HPAController.HorizontalPodAutoscalerTolerance,
-			HorizontalPodAutoscalerUseRESTClients:               componentConfig.HPAController.HorizontalPodAutoscalerUseRESTClients,
+			&componentConfig.HPAController,
 		},
 		JobController: &JobControllerOptions{
-			ConcurrentJobSyncs: componentConfig.JobController.ConcurrentJobSyncs,
+			&componentConfig.JobController,
 		},
 		NamespaceController: &NamespaceControllerOptions{
-			NamespaceSyncPeriod:      componentConfig.NamespaceController.NamespaceSyncPeriod,
-			ConcurrentNamespaceSyncs: componentConfig.NamespaceController.ConcurrentNamespaceSyncs,
+			&componentConfig.NamespaceController,
 		},
 		NodeIPAMController: &NodeIPAMControllerOptions{
-			NodeCIDRMaskSize: componentConfig.NodeIPAMController.NodeCIDRMaskSize,
+			&componentConfig.NodeIPAMController,
 		},
 		NodeLifecycleController: &NodeLifecycleControllerOptions{
-			EnableTaintManager:     componentConfig.NodeLifecycleController.EnableTaintManager,
-			NodeMonitorGracePeriod: componentConfig.NodeLifecycleController.NodeMonitorGracePeriod,
-			NodeStartupGracePeriod: componentConfig.NodeLifecycleController.NodeStartupGracePeriod,
-			PodEvictionTimeout:     componentConfig.NodeLifecycleController.PodEvictionTimeout,
+			&componentConfig.NodeLifecycleController,
 		},
 		PersistentVolumeBinderController: &PersistentVolumeBinderControllerOptions{
-			PVClaimBinderSyncPeriod: componentConfig.PersistentVolumeBinderController.PVClaimBinderSyncPeriod,
-			VolumeConfiguration:     componentConfig.PersistentVolumeBinderController.VolumeConfiguration,
+			&componentConfig.PersistentVolumeBinderController,
 		},
 		PodGCController: &PodGCControllerOptions{
-			TerminatedPodGCThreshold: componentConfig.PodGCController.TerminatedPodGCThreshold,
+			&componentConfig.PodGCController,
 		},
 		ReplicaSetController: &ReplicaSetControllerOptions{
-			ConcurrentRSSyncs: componentConfig.ReplicaSetController.ConcurrentRSSyncs,
+			&componentConfig.ReplicaSetController,
 		},
 		ReplicationController: &ReplicationControllerOptions{
-			ConcurrentRCSyncs: componentConfig.ReplicationController.ConcurrentRCSyncs,
+			&componentConfig.ReplicationController,
 		},
 		ResourceQuotaController: &ResourceQuotaControllerOptions{
-			ResourceQuotaSyncPeriod:      componentConfig.ResourceQuotaController.ResourceQuotaSyncPeriod,
-			ConcurrentResourceQuotaSyncs: componentConfig.ResourceQuotaController.ConcurrentResourceQuotaSyncs,
+			&componentConfig.ResourceQuotaController,
 		},
 		SAController: &SAControllerOptions{
-			ConcurrentSATokenSyncs: componentConfig.SAController.ConcurrentSATokenSyncs,
-		},
-		ServiceController: &cmoptions.ServiceControllerOptions{
-			ConcurrentServiceSyncs: componentConfig.ServiceController.ConcurrentServiceSyncs,
+			&componentConfig.SAController,
 		},
 		TTLAfterFinishedController: &TTLAfterFinishedControllerOptions{
-			ConcurrentTTLSyncs: componentConfig.TTLAfterFinishedController.ConcurrentTTLSyncs,
+			&componentConfig.TTLAfterFinishedController,
 		},
 		SecureServing: apiserveroptions.NewSecureServingOptions().WithLoopback(),
 		InsecureServing: (&apiserveroptions.DeprecatedInsecureServingOptions{
@@ -194,12 +186,14 @@ func NewKubeControllerManagerOptions() (*KubeControllerManagerOptions, error) {
 	s.SecureServing.ServerCert.PairName = "kube-controller-manager"
 	s.SecureServing.BindPort = ports.KubeControllerManagerPort
 
-	gcIgnoredResources := make([]kubectrlmgrconfig.GroupResource, 0, len(garbagecollector.DefaultIgnoredResources()))
+	gcIgnoredResources := make([]garbagecollectorconfig.GroupResource, 0, len(garbagecollector.DefaultIgnoredResources()))
 	for r := range garbagecollector.DefaultIgnoredResources() {
-		gcIgnoredResources = append(gcIgnoredResources, kubectrlmgrconfig.GroupResource{Group: r.Group, Resource: r.Resource})
+		gcIgnoredResources = append(gcIgnoredResources, garbagecollectorconfig.GroupResource{Group: r.Group, Resource: r.Resource})
 	}
 
 	s.GarbageCollectorController.GCIgnoredResources = gcIgnoredResources
+	s.Generic.LeaderElection.ResourceName = "kube-controller-manager"
+	s.Generic.LeaderElection.ResourceNamespace = "kube-system"
 
 	return &s, nil
 }
@@ -218,8 +212,8 @@ func NewDefaultComponentConfig(insecurePort int32) (kubectrlmgrconfig.KubeContro
 }
 
 // Flags returns flags for a specific APIServer by section name
-func (s *KubeControllerManagerOptions) Flags(allControllers []string, disabledByDefaultControllers []string) apiserverflag.NamedFlagSets {
-	fss := apiserverflag.NamedFlagSets{}
+func (s *KubeControllerManagerOptions) Flags(allControllers []string, disabledByDefaultControllers []string) cliflag.NamedFlagSets {
+	fss := cliflag.NamedFlagSets{}
 	s.Generic.AddFlags(&fss, allControllers, disabledByDefaultControllers)
 	s.KubeCloudShared.AddFlags(fss.FlagSet("generic"))
 	s.ServiceController.AddFlags(fss.FlagSet("service controller"))
@@ -232,9 +226,11 @@ func (s *KubeControllerManagerOptions) Flags(allControllers []string, disabledBy
 	s.AttachDetachController.AddFlags(fss.FlagSet("attachdetach controller"))
 	s.CSRSigningController.AddFlags(fss.FlagSet("csrsigning controller"))
 	s.DeploymentController.AddFlags(fss.FlagSet("deployment controller"))
+	s.StatefulSetController.AddFlags(fss.FlagSet("statefulset controller"))
 	s.DaemonSetController.AddFlags(fss.FlagSet("daemonset controller"))
 	s.DeprecatedFlags.AddFlags(fss.FlagSet("deprecated"))
 	s.EndpointController.AddFlags(fss.FlagSet("endpoint controller"))
+	s.EndpointSliceController.AddFlags(fss.FlagSet("endpointslice controller"))
 	s.GarbageCollectorController.AddFlags(fss.FlagSet("garbagecollector controller"))
 	s.HPAController.AddFlags(fss.FlagSet("horizontalpodautoscaling controller"))
 	s.JobController.AddFlags(fss.FlagSet("job controller"))
@@ -277,10 +273,16 @@ func (s *KubeControllerManagerOptions) ApplyTo(c *kubecontrollerconfig.Config) e
 	if err := s.DeploymentController.ApplyTo(&c.ComponentConfig.DeploymentController); err != nil {
 		return err
 	}
+	if err := s.StatefulSetController.ApplyTo(&c.ComponentConfig.StatefulSetController); err != nil {
+		return err
+	}
 	if err := s.DeprecatedFlags.ApplyTo(&c.ComponentConfig.DeprecatedController); err != nil {
 		return err
 	}
 	if err := s.EndpointController.ApplyTo(&c.ComponentConfig.EndpointController); err != nil {
+		return err
+	}
+	if err := s.EndpointSliceController.ApplyTo(&c.ComponentConfig.EndpointSliceController); err != nil {
 		return err
 	}
 	if err := s.GarbageCollectorController.ApplyTo(&c.ComponentConfig.GarbageCollectorController); err != nil {
@@ -358,8 +360,10 @@ func (s *KubeControllerManagerOptions) Validate(allControllers []string, disable
 	errs = append(errs, s.CSRSigningController.Validate()...)
 	errs = append(errs, s.DaemonSetController.Validate()...)
 	errs = append(errs, s.DeploymentController.Validate()...)
+	errs = append(errs, s.StatefulSetController.Validate()...)
 	errs = append(errs, s.DeprecatedFlags.Validate()...)
 	errs = append(errs, s.EndpointController.Validate()...)
+	errs = append(errs, s.EndpointSliceController.Validate()...)
 	errs = append(errs, s.GarbageCollectorController.Validate()...)
 	errs = append(errs, s.HPAController.Validate()...)
 	errs = append(errs, s.JobController.Validate()...)
@@ -398,6 +402,7 @@ func (s KubeControllerManagerOptions) Config(allControllers []string, disabledBy
 	if err != nil {
 		return nil, err
 	}
+	kubeconfig.DisableCompression = true
 	kubeconfig.ContentConfig.ContentType = s.Generic.ClientConnection.ContentType
 	kubeconfig.QPS = s.Generic.ClientConnection.QPS
 	kubeconfig.Burst = int(s.Generic.ClientConnection.Burst)

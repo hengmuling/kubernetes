@@ -40,10 +40,10 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/integer"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/component-base/metrics/prometheus/ratelimiter"
 	"k8s.io/kubernetes/pkg/controller"
-	"k8s.io/kubernetes/pkg/util/metrics"
+	"k8s.io/utils/integer"
 
 	"k8s.io/klog"
 )
@@ -95,7 +95,7 @@ func NewJobController(podInformer coreinformers.PodInformer, jobInformer batchin
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
 
 	if kubeClient != nil && kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
-		metrics.RegisterMetricAndTrackRateLimiterUsage("job_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter())
+		ratelimiter.RegisterMetricAndTrackRateLimiterUsage("job_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter())
 	}
 
 	jm := &JobController{
@@ -143,7 +143,7 @@ func (jm *JobController) Run(workers int, stopCh <-chan struct{}) {
 	klog.Infof("Starting job controller")
 	defer klog.Infof("Shutting down job controller")
 
-	if !controller.WaitForCacheSync("job", stopCh, jm.podStoreSynced, jm.jobStoreSynced) {
+	if !cache.WaitForNamedCacheSync("job", stopCh, jm.podStoreSynced, jm.jobStoreSynced) {
 		return
 	}
 
@@ -631,16 +631,15 @@ func pastBackoffLimitOnFailure(job *batch.Job, pods []*v1.Pod) bool {
 	result := int32(0)
 	for i := range pods {
 		po := pods[i]
-		if po.Status.Phase != v1.PodRunning {
-			continue
-		}
-		for j := range po.Status.InitContainerStatuses {
-			stat := po.Status.InitContainerStatuses[j]
-			result += stat.RestartCount
-		}
-		for j := range po.Status.ContainerStatuses {
-			stat := po.Status.ContainerStatuses[j]
-			result += stat.RestartCount
+		if po.Status.Phase == v1.PodRunning || po.Status.Phase == v1.PodPending {
+			for j := range po.Status.InitContainerStatuses {
+				stat := po.Status.InitContainerStatuses[j]
+				result += stat.RestartCount
+			}
+			for j := range po.Status.ContainerStatuses {
+				stat := po.Status.ContainerStatuses[j]
+				result += stat.RestartCount
+			}
 		}
 	}
 	if *job.Spec.BackoffLimit == 0 {
@@ -746,6 +745,9 @@ func (jm *JobController) manageJob(activePods []*v1.Pod, succeeded int32, job *b
 		if diff < 0 {
 			utilruntime.HandleError(fmt.Errorf("More active than wanted: job %q, want %d, have %d", jobKey, wantActive, active))
 			diff = 0
+		}
+		if diff == 0 {
+			return active, nil
 		}
 		jm.expectations.ExpectCreations(jobKey, int(diff))
 		errCh = make(chan error, diff)

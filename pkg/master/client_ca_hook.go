@@ -19,10 +19,10 @@ package master
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -31,6 +31,7 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
+// ClientCARegistrationHook defines CA registration hook request structure
 type ClientCARegistrationHook struct {
 	ClientCA []byte
 
@@ -41,6 +42,7 @@ type ClientCARegistrationHook struct {
 	RequestHeaderAllowedNames        []string
 }
 
+// PostStartHook initializes client CA configmap for the API server
 func (h ClientCARegistrationHook) PostStartHook(hookContext genericapiserver.PostStartHookContext) error {
 	// initializing CAs is important so that aggregated API servers can come up with "normal" config.
 	// We've seen lagging etcd before, so we want to retry this a few times before we decide to crashloop
@@ -132,7 +134,7 @@ func writeConfigMap(client corev1client.ConfigMapsGetter, name string, data map[
 		return err
 	}
 
-	if !reflect.DeepEqual(existing.Data, data) {
+	if !apiequality.Semantic.DeepEqual(existing.Data, data) {
 		existing.Data = data
 		_, err = client.ConfigMaps(metav1.NamespaceSystem).Update(existing)
 	}

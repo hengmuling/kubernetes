@@ -23,16 +23,34 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/storage/v1beta1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	utilfeaturetesting "k8s.io/apiserver/pkg/util/feature/testing"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	csilibplugins "k8s.io/csi-translation-lib/plugins"
 	"k8s.io/kubernetes/pkg/features"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
+	fakelisters "k8s.io/kubernetes/pkg/scheduler/listers/fake"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
+	utilpointer "k8s.io/utils/pointer"
 )
+
+func getVolumeLimitKey(filterType string) v1.ResourceName {
+	switch filterType {
+	case EBSVolumeFilterType:
+		return v1.ResourceName(volumeutil.EBSVolumeLimitKey)
+	case GCEPDVolumeFilterType:
+		return v1.ResourceName(volumeutil.GCEVolumeLimitKey)
+	case AzureDiskVolumeFilterType:
+		return v1.ResourceName(volumeutil.AzureVolumeLimitKey)
+	case CinderVolumeFilterType:
+		return v1.ResourceName(volumeutil.CinderVolumeLimitKey)
+	default:
+		return v1.ResourceName(volumeutil.GetCSIAttachLimitKey(filterType))
+	}
+}
 
 func onePVCPod(filterName string) *v1.Pod {
 	return &v1.Pod{
@@ -96,6 +114,32 @@ func TestVolumeCountConflicts(t *testing.T) {
 				{
 					VolumeSource: v1.VolumeSource{
 						AWSElasticBlockStore: &v1.AWSElasticBlockStoreVolumeSource{VolumeID: "tvp2"},
+					},
+				},
+			},
+		},
+	}
+	unboundPVCwithInvalidSCPod := &v1.Pod{
+		Spec: v1.PodSpec{
+			Volumes: []v1.Volume{
+				{
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "unboundPVCwithInvalidSCPod",
+						},
+					},
+				},
+			},
+		},
+	}
+	unboundPVCwithDefaultSCPod := &v1.Pod{
+		Spec: v1.PodSpec{
+			Volumes: []v1.Volume{
+				{
+					VolumeSource: v1.VolumeSource{
+						PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "unboundPVCwithDefaultSCPod",
+						},
 					},
 				},
 			},
@@ -247,6 +291,33 @@ func TestVolumeCountConflicts(t *testing.T) {
 			},
 		},
 	}
+	twoVolCinderPod := &v1.Pod{
+		Spec: v1.PodSpec{
+			Volumes: []v1.Volume{
+				{
+					VolumeSource: v1.VolumeSource{
+						Cinder: &v1.CinderVolumeSource{VolumeID: "tvp1"},
+					},
+				},
+				{
+					VolumeSource: v1.VolumeSource{
+						Cinder: &v1.CinderVolumeSource{VolumeID: "tvp2"},
+					},
+				},
+			},
+		},
+	}
+	oneVolCinderPod := &v1.Pod{
+		Spec: v1.PodSpec{
+			Volumes: []v1.Volume{
+				{
+					VolumeSource: v1.VolumeSource{
+						Cinder: &v1.CinderVolumeSource{VolumeID: "ovp"},
+					},
+				},
+			},
+		},
+	}
 
 	tests := []struct {
 		newPod       *v1.Pod
@@ -333,26 +404,43 @@ func TestVolumeCountConflicts(t *testing.T) {
 			newPod:       onePVCPod(EBSVolumeFilterType),
 			existingPods: []*v1.Pod{oneVolPod, deletedPVCPod},
 			filterName:   EBSVolumeFilterType,
-			maxVols:      2,
+			maxVols:      1,
 			fits:         false,
-			test:         "pod with missing PVC is counted towards the PV limit",
+			test:         "missing PVC is not counted towards the PV limit",
 		},
 		{
 			newPod:       onePVCPod(EBSVolumeFilterType),
 			existingPods: []*v1.Pod{oneVolPod, deletedPVCPod},
 			filterName:   EBSVolumeFilterType,
-			maxVols:      3,
+			maxVols:      2,
 			fits:         true,
-			test:         "pod with missing PVC is counted towards the PV limit",
+			test:         "missing PVC is not counted towards the PV limit",
 		},
 		{
 			newPod:       onePVCPod(EBSVolumeFilterType),
 			existingPods: []*v1.Pod{oneVolPod, twoDeletedPVCPod},
 			filterName:   EBSVolumeFilterType,
-			maxVols:      3,
-			fits:         false,
-			test:         "pod with missing two PVCs is counted towards the PV limit twice",
+			maxVols:      2,
+			fits:         true,
+			test:         "two missing PVCs are not counted towards the PV limit twice",
 		},
+		{
+			newPod:       unboundPVCwithInvalidSCPod,
+			existingPods: []*v1.Pod{oneVolPod},
+			filterName:   EBSVolumeFilterType,
+			maxVols:      1,
+			fits:         true,
+			test:         "unbound PVC with invalid SC is not counted towards the PV limit",
+		},
+		{
+			newPod:       unboundPVCwithDefaultSCPod,
+			existingPods: []*v1.Pod{oneVolPod},
+			filterName:   EBSVolumeFilterType,
+			maxVols:      1,
+			fits:         true,
+			test:         "unbound PVC from different provisioner is not counted towards the PV limit",
+		},
+
 		{
 			newPod:       onePVCPod(EBSVolumeFilterType),
 			existingPods: []*v1.Pod{oneVolPod, deletedPVPod},
@@ -739,6 +827,23 @@ func TestVolumeCountConflicts(t *testing.T) {
 			fits:         true,
 			test:         "two different unbound PVCs are counted towards the PV limit as two volumes",
 		},
+		// filterName:CinderVolumeFilterType
+		{
+			newPod:       oneVolCinderPod,
+			existingPods: []*v1.Pod{twoVolCinderPod},
+			filterName:   CinderVolumeFilterType,
+			maxVols:      4,
+			fits:         true,
+			test:         "fits when node capacity >= new pod's Cinder volumes",
+		},
+		{
+			newPod:       oneVolCinderPod,
+			existingPods: []*v1.Pod{twoVolCinderPod},
+			filterName:   CinderVolumeFilterType,
+			maxVols:      2,
+			fits:         false,
+			test:         "not fit when node capacity < new pod's Cinder volumes",
+		},
 	}
 
 	expectedFailureReasons := []PredicateFailureReason{ErrMaxVolumeCountExceeded}
@@ -746,8 +851,14 @@ func TestVolumeCountConflicts(t *testing.T) {
 	// running attachable predicate tests without feature gate and no limit present on nodes
 	for _, test := range tests {
 		os.Setenv(KubeMaxPDVols, strconv.Itoa(test.maxVols))
-		pred := NewMaxPDVolumeCountPredicate(test.filterName, getFakePVInfo(test.filterName), getFakePVCInfo(test.filterName))
-		fits, reasons, err := pred(test.newPod, GetPredicateMetadata(test.newPod, nil), schedulernodeinfo.NewNodeInfo(test.existingPods...))
+		node, csiNode := getNodeWithPodAndVolumeLimits("node", test.existingPods, int64(test.maxVols), test.filterName)
+		pred := NewMaxPDVolumeCountPredicate(test.filterName,
+			getFakeCSINodeInfo(csiNode),
+			getFakeStorageClassInfo(test.filterName),
+			getFakePVInfo(test.filterName),
+			getFakePVCInfo(test.filterName))
+
+		fits, reasons, err := pred(test.newPod, GetPredicateMetadata(test.newPod, nil), node)
 		if err != nil {
 			t.Errorf("[%s]%s: unexpected error: %v", test.filterName, test.test, err)
 		}
@@ -759,12 +870,16 @@ func TestVolumeCountConflicts(t *testing.T) {
 		}
 	}
 
-	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AttachVolumeLimit, true)()
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AttachVolumeLimit, true)()
 
 	// running attachable predicate tests with feature gate and limit present on nodes
 	for _, test := range tests {
-		node := getNodeWithPodAndVolumeLimits(test.existingPods, int64(test.maxVols), test.filterName)
-		pred := NewMaxPDVolumeCountPredicate(test.filterName, getFakePVInfo(test.filterName), getFakePVCInfo(test.filterName))
+		node, csiNode := getNodeWithPodAndVolumeLimits("node", test.existingPods, int64(test.maxVols), test.filterName)
+		pred := NewMaxPDVolumeCountPredicate(test.filterName,
+			getFakeCSINodeInfo(csiNode),
+			getFakeStorageClassInfo(test.filterName),
+			getFakePVInfo(test.filterName),
+			getFakePVCInfo(test.filterName))
 		fits, reasons, err := pred(test.newPod, GetPredicateMetadata(test.newPod, nil), node)
 		if err != nil {
 			t.Errorf("Using allocatable [%s]%s: unexpected error: %v", test.filterName, test.test, err)
@@ -778,8 +893,34 @@ func TestVolumeCountConflicts(t *testing.T) {
 	}
 }
 
-func getFakePVInfo(filterName string) FakePersistentVolumeInfo {
-	return FakePersistentVolumeInfo{
+func getFakeStorageClassInfo(sc string) fakelisters.StorageClassInfo {
+	var provisioner string
+	switch sc {
+	case EBSVolumeFilterType:
+		provisioner = csilibplugins.AWSEBSInTreePluginName
+	case GCEPDVolumeFilterType:
+		provisioner = csilibplugins.GCEPDInTreePluginName
+	case AzureDiskVolumeFilterType:
+		provisioner = csilibplugins.AzureDiskInTreePluginName
+	case CinderVolumeFilterType:
+		provisioner = csilibplugins.CinderInTreePluginName
+	default:
+		return fakelisters.StorageClassInfo{}
+	}
+	return fakelisters.StorageClassInfo{
+		{
+			ObjectMeta:  metav1.ObjectMeta{Name: sc},
+			Provisioner: provisioner,
+		},
+		{
+			ObjectMeta:  metav1.ObjectMeta{Name: "standard-sc"},
+			Provisioner: "standard-sc",
+		},
+	}
+}
+
+func getFakePVInfo(filterName string) fakelisters.PersistentVolumeInfo {
+	return fakelisters.PersistentVolumeInfo{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "some" + filterName + "Vol"},
 			Spec: v1.PersistentVolumeSpec{
@@ -797,31 +938,63 @@ func getFakePVInfo(filterName string) FakePersistentVolumeInfo {
 	}
 }
 
-func getFakePVCInfo(filterName string) FakePersistentVolumeClaimInfo {
-	return FakePersistentVolumeClaimInfo{
+func getFakePVCInfo(filterName string) fakelisters.PersistentVolumeClaimInfo {
+	return fakelisters.PersistentVolumeClaimInfo{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "some" + filterName + "Vol"},
-			Spec:       v1.PersistentVolumeClaimSpec{VolumeName: "some" + filterName + "Vol"},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "some" + filterName + "Vol",
+				StorageClassName: &filterName,
+			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "someNon" + filterName + "Vol"},
-			Spec:       v1.PersistentVolumeClaimSpec{VolumeName: "someNon" + filterName + "Vol"},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "someNon" + filterName + "Vol",
+				StorageClassName: &filterName,
+			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "pvcWithDeletedPV"},
-			Spec:       v1.PersistentVolumeClaimSpec{VolumeName: "pvcWithDeletedPV"},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "pvcWithDeletedPV",
+				StorageClassName: &filterName,
+			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "anotherPVCWithDeletedPV"},
-			Spec:       v1.PersistentVolumeClaimSpec{VolumeName: "anotherPVCWithDeletedPV"},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "anotherPVCWithDeletedPV",
+				StorageClassName: &filterName,
+			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "unboundPVC"},
-			Spec:       v1.PersistentVolumeClaimSpec{VolumeName: ""},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "",
+				StorageClassName: &filterName,
+			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "anotherUnboundPVC"},
-			Spec:       v1.PersistentVolumeClaimSpec{VolumeName: ""},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "",
+				StorageClassName: &filterName,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "unboundPVCwithDefaultSCPod"},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "",
+				StorageClassName: utilpointer.StringPtr("standard-sc"),
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "unboundPVCwithInvalidSCPod"},
+			Spec: v1.PersistentVolumeClaimSpec{
+				VolumeName:       "",
+				StorageClassName: utilpointer.StringPtr("invalid-sc"),
+			},
 		},
 	}
 }
@@ -831,7 +1004,7 @@ func TestMaxVolumeFuncM5(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node-for-m5-instance",
 			Labels: map[string]string{
-				kubeletapis.LabelInstanceType: "m5.large",
+				v1.LabelInstanceType: "m5.large",
 			},
 		},
 	}
@@ -848,7 +1021,7 @@ func TestMaxVolumeFuncT3(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node-for-t3-instance",
 			Labels: map[string]string{
-				kubeletapis.LabelInstanceType: "t3.medium",
+				v1.LabelInstanceType: "t3.medium",
 			},
 		},
 	}
@@ -865,7 +1038,7 @@ func TestMaxVolumeFuncR5(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node-for-r5-instance",
 			Labels: map[string]string{
-				kubeletapis.LabelInstanceType: "r5d.xlarge",
+				v1.LabelInstanceType: "r5d.xlarge",
 			},
 		},
 	}
@@ -882,7 +1055,7 @@ func TestMaxVolumeFuncM4(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node-for-m4-instance",
 			Labels: map[string]string{
-				kubeletapis.LabelInstanceType: "m4.2xlarge",
+				v1.LabelInstanceType: "m4.2xlarge",
 			},
 		},
 	}
@@ -894,29 +1067,63 @@ func TestMaxVolumeFuncM4(t *testing.T) {
 	}
 }
 
-func getNodeWithPodAndVolumeLimits(pods []*v1.Pod, limit int64, filter string) *schedulernodeinfo.NodeInfo {
+func getNodeWithPodAndVolumeLimits(limitSource string, pods []*v1.Pod, limit int64, driverNames ...string) (*schedulernodeinfo.NodeInfo, *v1beta1.CSINode) {
 	nodeInfo := schedulernodeinfo.NewNodeInfo(pods...)
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "node-for-max-pd-test-1"},
 		Status: v1.NodeStatus{
-			Allocatable: v1.ResourceList{
-				getVolumeLimitKey(filter): *resource.NewQuantity(limit, resource.DecimalSI),
-			},
+			Allocatable: v1.ResourceList{},
 		},
 	}
-	nodeInfo.SetNode(node)
-	return nodeInfo
-}
+	var csiNode *v1beta1.CSINode
 
-func getVolumeLimitKey(filterType string) v1.ResourceName {
-	switch filterType {
-	case EBSVolumeFilterType:
-		return v1.ResourceName(volumeutil.EBSVolumeLimitKey)
-	case GCEPDVolumeFilterType:
-		return v1.ResourceName(volumeutil.GCEVolumeLimitKey)
-	case AzureDiskVolumeFilterType:
-		return v1.ResourceName(volumeutil.AzureVolumeLimitKey)
-	default:
-		return v1.ResourceName(volumeutil.GetCSIAttachLimitKey(filterType))
+	addLimitToNode := func() {
+		for _, driver := range driverNames {
+			node.Status.Allocatable[getVolumeLimitKey(driver)] = *resource.NewQuantity(limit, resource.DecimalSI)
+		}
 	}
+
+	initCSINode := func() {
+		csiNode = &v1beta1.CSINode{
+			ObjectMeta: metav1.ObjectMeta{Name: "csi-node-for-max-pd-test-1"},
+			Spec: v1beta1.CSINodeSpec{
+				Drivers: []v1beta1.CSINodeDriver{},
+			},
+		}
+	}
+
+	addDriversCSINode := func(addLimits bool) {
+		initCSINode()
+		for _, driver := range driverNames {
+			driver := v1beta1.CSINodeDriver{
+				Name:   driver,
+				NodeID: "node-for-max-pd-test-1",
+			}
+			if addLimits {
+				driver.Allocatable = &v1beta1.VolumeNodeResources{
+					Count: utilpointer.Int32Ptr(int32(limit)),
+				}
+			}
+			csiNode.Spec.Drivers = append(csiNode.Spec.Drivers, driver)
+		}
+	}
+
+	switch limitSource {
+	case "node":
+		addLimitToNode()
+	case "csinode":
+		addDriversCSINode(true)
+	case "both":
+		addLimitToNode()
+		addDriversCSINode(true)
+	case "csinode-with-no-limit":
+		addDriversCSINode(false)
+	case "no-csi-driver":
+		initCSINode()
+	default:
+		// Do nothing.
+	}
+
+	nodeInfo.SetNode(node)
+	return nodeInfo, csiNode
 }

@@ -25,13 +25,13 @@ go_library(
         "//staging/src/k8s.io/apimachinery/pkg/util/errors:go_default_library",
         "//staging/src/k8s.io/apiserver/pkg/server/options:go_default_library",
         "//staging/src/k8s.io/apiserver/pkg/util/feature:go_default_library",
-        "//staging/src/k8s.io/apiserver/pkg/util/flag:go_default_library",
         "//staging/src/k8s.io/client-go/informers:go_default_library",
         "//staging/src/k8s.io/client-go/kubernetes:go_default_library",
         "//staging/src/k8s.io/client-go/kubernetes/typed/core/v1:go_default_library",
         "//staging/src/k8s.io/client-go/rest:go_default_library",
         "//staging/src/k8s.io/client-go/tools/clientcmd:go_default_library",
         "//staging/src/k8s.io/client-go/tools/record:go_default_library",
+        "//staging/src/k8s.io/component-base/cli/flag:go_default_library",
         "//vendor/k8s.io/klog:go_default_library",
     ],
 )
@@ -55,6 +55,8 @@ go_test(
     embed = [":go_default_library"],
     deps = [
         "//cmd/controller-manager/app/options:go_default_library",
+        "//pkg/controller/apis/config:go_default_library",
+        "//pkg/controller/service/config:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/diff:go_default_library",
         "//staging/src/k8s.io/apiserver/pkg/server/options:go_default_library",

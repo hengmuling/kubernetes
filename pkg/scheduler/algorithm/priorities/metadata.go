@@ -17,23 +17,29 @@ limitations under the License.
 package priorities
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
+	appslisters "k8s.io/client-go/listers/apps/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 // PriorityMetadataFactory is a factory to produce PriorityMetadata.
 type PriorityMetadataFactory struct {
-	serviceLister     algorithm.ServiceLister
-	controllerLister  algorithm.ControllerLister
-	replicaSetLister  algorithm.ReplicaSetLister
-	statefulSetLister algorithm.StatefulSetLister
+	serviceLister     corelisters.ServiceLister
+	controllerLister  corelisters.ReplicationControllerLister
+	replicaSetLister  appslisters.ReplicaSetLister
+	statefulSetLister appslisters.StatefulSetLister
 }
 
 // NewPriorityMetadataFactory creates a PriorityMetadataFactory.
-func NewPriorityMetadataFactory(serviceLister algorithm.ServiceLister, controllerLister algorithm.ControllerLister, replicaSetLister algorithm.ReplicaSetLister, statefulSetLister algorithm.StatefulSetLister) algorithm.PriorityMetadataProducer {
+func NewPriorityMetadataFactory(
+	serviceLister corelisters.ServiceLister,
+	controllerLister corelisters.ReplicationControllerLister,
+	replicaSetLister appslisters.ReplicaSetLister,
+	statefulSetLister appslisters.StatefulSetLister,
+) PriorityMetadataProducer {
 	factory := &PriorityMetadataFactory{
 		serviceLister:     serviceLister,
 		controllerLister:  controllerLister,
@@ -45,7 +51,7 @@ func NewPriorityMetadataFactory(serviceLister algorithm.ServiceLister, controlle
 
 // priorityMetadata is a type that is passed as metadata for priority functions
 type priorityMetadata struct {
-	nonZeroRequest          *schedulernodeinfo.Resource
+	podLimits               *schedulernodeinfo.Resource
 	podTolerations          []v1.Toleration
 	affinity                *v1.Affinity
 	podSelectors            []labels.Selector
@@ -61,7 +67,7 @@ func (pmf *PriorityMetadataFactory) PriorityMetadata(pod *v1.Pod, nodeNameToInfo
 		return nil
 	}
 	return &priorityMetadata{
-		nonZeroRequest:          getNonZeroRequests(pod),
+		podLimits:               getResourceLimits(pod),
 		podTolerations:          getAllTolerationPreferNoSchedule(pod.Spec.Tolerations),
 		affinity:                pod.Spec.Affinity,
 		podSelectors:            getSelectors(pod, pmf.serviceLister, pmf.controllerLister, pmf.replicaSetLister, pmf.statefulSetLister),
@@ -72,7 +78,7 @@ func (pmf *PriorityMetadataFactory) PriorityMetadata(pod *v1.Pod, nodeNameToInfo
 }
 
 // getFirstServiceSelector returns one selector of services the given pod.
-func getFirstServiceSelector(pod *v1.Pod, sl algorithm.ServiceLister) (firstServiceSelector labels.Selector) {
+func getFirstServiceSelector(pod *v1.Pod, sl corelisters.ServiceLister) (firstServiceSelector labels.Selector) {
 	if services, err := sl.GetPodServices(pod); err == nil && len(services) > 0 {
 		return labels.SelectorFromSet(services[0].Spec.Selector)
 	}
@@ -80,7 +86,7 @@ func getFirstServiceSelector(pod *v1.Pod, sl algorithm.ServiceLister) (firstServ
 }
 
 // getSelectors returns selectors of services, RCs and RSs matching the given pod.
-func getSelectors(pod *v1.Pod, sl algorithm.ServiceLister, cl algorithm.ControllerLister, rsl algorithm.ReplicaSetLister, ssl algorithm.StatefulSetLister) []labels.Selector {
+func getSelectors(pod *v1.Pod, sl corelisters.ServiceLister, cl corelisters.ReplicationControllerLister, rsl appslisters.ReplicaSetLister, ssl appslisters.StatefulSetLister) []labels.Selector {
 	var selectors []labels.Selector
 
 	if services, err := sl.GetPodServices(pod); err == nil {

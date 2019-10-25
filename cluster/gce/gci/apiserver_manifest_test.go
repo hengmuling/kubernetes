@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -49,6 +49,7 @@ readonly APISERVER_SERVER_KEY_PATH=/foo/bar
 readonly APISERVER_CLIENT_CERT_PATH=/foo/bar
 readonly CLOUD_CONFIG_MOUNT="{\"name\": \"cloudconfigmount\",\"mountPath\": \"/etc/gce.conf\", \"readOnly\": true},"
 readonly CLOUD_CONFIG_VOLUME="{\"name\": \"cloudconfigmount\",\"hostPath\": {\"path\": \"/etc/gce.conf\", \"type\": \"FileOrCreate\"}},"
+readonly INSECURE_PORT_MAPPING="{ \"name\": \"local\", \"containerPort\": 8080, \"hostPort\": 8080},"
 readonly DOCKER_REGISTRY="k8s.gcr.io"
 readonly ENABLE_LEGACY_ABAC=false
 readonly ETC_MANIFESTS=${KUBE_HOME}/etc/kubernetes/manifests
@@ -66,6 +67,7 @@ readonly CLOUD_KMS_INTEGRATION=true
 {{end}}
 `
 	kubeAPIServerManifestFileName = "kube-apiserver.manifest"
+	kubeAPIServerConfigScriptName = "configure-kubeapiserver.sh"
 	kubeAPIServerStartFuncName    = "start-kube-apiserver"
 )
 
@@ -87,7 +89,7 @@ func newKubeAPIServerManifestTestCase(t *testing.T) *kubeAPIServerManifestTestCa
 }
 
 func (c *kubeAPIServerManifestTestCase) invokeTest(e kubeAPIServerEnv, kubeEnv string) {
-	c.mustInvokeFunc(kubeEnv, e)
+	c.mustInvokeFunc(kubeEnv, kubeAPIServerConfigScriptName, e)
 	c.mustLoadPodFromManifest()
 }
 
@@ -158,7 +160,7 @@ func TestEncryptionProviderConfig(t *testing.T) {
 		EncryptionProviderConfig:     base64.StdEncoding.EncodeToString([]byte("foo")),
 	}
 
-	c.mustInvokeFunc(deployHelperEnv, e)
+	c.mustInvokeFunc(deployHelperEnv, kubeAPIServerConfigScriptName, e)
 
 	if _, err := os.Stat(p); err != nil {
 		c.t.Fatalf("Expected encryption provider config to be written to %s, but stat failed with error: %v", p, err)

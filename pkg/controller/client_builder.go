@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -34,11 +35,10 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	watchtools "k8s.io/client-go/tools/watch"
+	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/serviceaccount"
-
-	"k8s.io/klog"
 )
 
 // ControllerClientBuilder allows you to get clients and configs for controllers
@@ -108,24 +108,28 @@ type SAControllerClientBuilder struct {
 // config returns a complete clientConfig for constructing clients.  This is separate in anticipation of composition
 // which means that not all clientsets are known here
 func (b SAControllerClientBuilder) Config(name string) (*restclient.Config, error) {
-	sa, err := b.getOrCreateServiceAccount(name)
+	sa, err := getOrCreateServiceAccount(b.CoreClient, b.Namespace, name)
 	if err != nil {
 		return nil, err
 	}
 
 	var clientConfig *restclient.Config
-
+	fieldSelector := fields.SelectorFromSet(map[string]string{
+		api.SecretTypeField: string(v1.SecretTypeServiceAccountToken),
+	}).String()
 	lw := &cache.ListWatch{
 		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-			options.FieldSelector = fields.SelectorFromSet(map[string]string{api.SecretTypeField: string(v1.SecretTypeServiceAccountToken)}).String()
+			options.FieldSelector = fieldSelector
 			return b.CoreClient.Secrets(b.Namespace).List(options)
 		},
 		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-			options.FieldSelector = fields.SelectorFromSet(map[string]string{api.SecretTypeField: string(v1.SecretTypeServiceAccountToken)}).String()
+			options.FieldSelector = fieldSelector
 			return b.CoreClient.Secrets(b.Namespace).Watch(options)
 		},
 	}
-	_, err = watchtools.ListWatchUntil(30*time.Second, lw,
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err = watchtools.UntilWithSync(ctx, lw, &v1.Secret{}, nil,
 		func(event watch.Event) (bool, error) {
 			switch event.Type {
 			case watch.Deleted:
@@ -171,30 +175,6 @@ func (b SAControllerClientBuilder) Config(name string) (*restclient.Config, erro
 	}
 
 	return clientConfig, nil
-}
-
-func (b SAControllerClientBuilder) getOrCreateServiceAccount(name string) (*v1.ServiceAccount, error) {
-	sa, err := b.CoreClient.ServiceAccounts(b.Namespace).Get(name, metav1.GetOptions{})
-	if err == nil {
-		return sa, nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return nil, err
-	}
-
-	// Create the namespace if we can't verify it exists.
-	// Tolerate errors, since we don't know whether this component has namespace creation permissions.
-	if _, err := b.CoreClient.Namespaces().Get(b.Namespace, metav1.GetOptions{}); err != nil {
-		b.CoreClient.Namespaces().Create(&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: b.Namespace}})
-	}
-
-	// Create the service account
-	sa, err = b.CoreClient.ServiceAccounts(b.Namespace).Create(&v1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: b.Namespace, Name: name}})
-	if apierrors.IsAlreadyExists(err) {
-		// If we're racing to init and someone else already created it, re-fetch
-		return b.CoreClient.ServiceAccounts(b.Namespace).Get(name, metav1.GetOptions{})
-	}
-	return sa, err
 }
 
 func (b SAControllerClientBuilder) getAuthenticatedConfig(sa *v1.ServiceAccount, token string) (*restclient.Config, bool, error) {

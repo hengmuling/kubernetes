@@ -26,15 +26,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/features"
-	utilstrings "k8s.io/kubernetes/pkg/util/strings"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/configmap"
 	"k8s.io/kubernetes/pkg/volume/downwardapi"
 	"k8s.io/kubernetes/pkg/volume/secret"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
-
-	"k8s.io/klog"
+	utilstrings "k8s.io/utils/strings"
 )
 
 // ProbeVolumePlugins is the entry point for plugin detection in a package.
@@ -67,7 +66,7 @@ func wrappedVolumeSpec() volume.Spec {
 }
 
 func getPath(uid types.UID, volName string, host volume.VolumeHost) string {
-	return host.GetPodVolumeDir(uid, utilstrings.EscapeQualifiedNameForDisk(projectedPluginName), volName)
+	return host.GetPodVolumeDir(uid, utilstrings.EscapeQualifiedName(projectedPluginName), volName)
 }
 
 func (plugin *projectedPlugin) Init(host volume.VolumeHost) error {
@@ -94,6 +93,10 @@ func (plugin *projectedPlugin) GetVolumeName(spec *volume.Spec) (string, error) 
 
 func (plugin *projectedPlugin) CanSupport(spec *volume.Spec) bool {
 	return spec.Volume != nil && spec.Volume.Projected != nil
+}
+
+func (plugin *projectedPlugin) IsMigratedToCSI() bool {
+	return false
 }
 
 func (plugin *projectedPlugin) RequiresRemount() bool {
@@ -185,11 +188,11 @@ func (s *projectedVolumeMounter) CanMount() error {
 	return nil
 }
 
-func (s *projectedVolumeMounter) SetUp(fsGroup *int64) error {
-	return s.SetUpAt(s.GetPath(), fsGroup)
+func (s *projectedVolumeMounter) SetUp(mounterArgs volume.MounterArgs) error {
+	return s.SetUpAt(s.GetPath(), mounterArgs)
 }
 
-func (s *projectedVolumeMounter) SetUpAt(dir string, fsGroup *int64) error {
+func (s *projectedVolumeMounter) SetUpAt(dir string, mounterArgs volume.MounterArgs) error {
 	klog.V(3).Infof("Setting up volume %v for pod %v at %v", s.volName, s.pod.UID, dir)
 
 	wrapped, err := s.plugin.host.NewWrapperMounter(s.volName, wrappedVolumeSpec(), s.pod, *s.opts)
@@ -204,7 +207,7 @@ func (s *projectedVolumeMounter) SetUpAt(dir string, fsGroup *int64) error {
 	}
 
 	setupSuccess := false
-	if err := wrapped.SetUpAt(dir, fsGroup); err != nil {
+	if err := wrapped.SetUpAt(dir, mounterArgs); err != nil {
 		return err
 	}
 
@@ -240,9 +243,9 @@ func (s *projectedVolumeMounter) SetUpAt(dir string, fsGroup *int64) error {
 		return err
 	}
 
-	err = volume.SetVolumeOwnership(s, fsGroup)
+	err = volume.SetVolumeOwnership(s, mounterArgs.FsGroup)
 	if err != nil {
-		klog.Errorf("Error applying volume ownership settings for group: %v", fsGroup)
+		klog.Errorf("Error applying volume ownership settings for group: %v", mounterArgs.FsGroup)
 		return err
 	}
 	setupSuccess = true

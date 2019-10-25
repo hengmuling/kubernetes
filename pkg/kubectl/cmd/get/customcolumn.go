@@ -28,13 +28,14 @@ import (
 	"github.com/liggitt/tabwriter"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/cli-runtime/pkg/genericclioptions/printers"
+	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/client-go/util/jsonpath"
-	utilprinters "k8s.io/kubernetes/pkg/kubectl/util/printers"
 )
 
-var jsonRegexp = regexp.MustCompile("^\\{\\.?([^{}]+)\\}$|^\\.?([^{}]+)$")
+var jsonRegexp = regexp.MustCompile(`^\{\.?([^{}]+)\}$|^\.?([^{}]+)$`)
 
 // RelaxedJSONPathExpression attempts to be flexible with JSONPath expressions, it accepts:
 //   * metadata.name (no leading '.' or curly braces '{...}'
@@ -75,7 +76,7 @@ func NewCustomColumnsPrinterFromSpec(spec string, decoder runtime.Decoder, noHea
 	parts := strings.Split(spec, ",")
 	columns := make([]Column, len(parts))
 	for ix := range parts {
-		colSpec := strings.Split(parts[ix], ":")
+		colSpec := strings.SplitN(parts[ix], ":", 2)
 		if len(colSpec) != 2 {
 			return nil, fmt.Errorf("unexpected custom-columns spec: %s, expected <header>:<json-path-expr>", parts[ix])
 		}
@@ -162,7 +163,7 @@ func (s *CustomColumnsPrinter) PrintObj(obj runtime.Object, out io.Writer) error
 	}
 
 	if w, found := out.(*tabwriter.Writer); !found {
-		w = utilprinters.GetNewTabWriter(out)
+		w = printers.GetNewTabWriter(out)
 		out = w
 		defer w.Flush()
 	}
@@ -205,6 +206,21 @@ func (s *CustomColumnsPrinter) PrintObj(obj runtime.Object, out io.Writer) error
 func (s *CustomColumnsPrinter) printOneObject(obj runtime.Object, parsers []*jsonpath.JSONPath, out io.Writer) error {
 	columns := make([]string, len(parsers))
 	switch u := obj.(type) {
+	case *metav1.WatchEvent:
+		if printers.InternalObjectPreventer.IsForbidden(reflect.Indirect(reflect.ValueOf(u.Object.Object)).Type().PkgPath()) {
+			return fmt.Errorf(printers.InternalObjectPrinterErr)
+		}
+		unstructuredObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(u.Object.Object)
+		if err != nil {
+			return err
+		}
+		obj = &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"type":   u.Type,
+				"object": unstructuredObject,
+			},
+		}
+
 	case *runtime.Unknown:
 		if len(u.Raw) > 0 {
 			var err error

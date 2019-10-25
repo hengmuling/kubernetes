@@ -28,9 +28,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/renstrom/dedent"
+	"github.com/lithammer/dedent"
 	"github.com/spf13/cobra"
-	kubeadmapiv1beta1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta1"
+	kubeadmapiv1beta2 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta2"
 	"k8s.io/kubernetes/cmd/kubeadm/app/componentconfigs"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
@@ -52,7 +52,9 @@ func TestNewCmdConfigImagesList(t *testing.T) {
 	var output bytes.Buffer
 	mockK8sVersion := dummyKubernetesVersion
 	images := NewCmdConfigImagesList(&output, &mockK8sVersion)
-	images.Run(nil, nil)
+	if err := images.RunE(nil, nil); err != nil {
+		t.Fatalf("Error from running the images command: %v", err)
+	}
 	actual := strings.Split(output.String(), "\n")
 	if len(actual) != defaultNumberOfImages {
 		t.Fatalf("Expected %v but found %v images", defaultNumberOfImages, len(actual))
@@ -71,13 +73,13 @@ func TestImagesListRunWithCustomConfigPath(t *testing.T) {
 			name:               "set k8s version",
 			expectedImageCount: defaultNumberOfImages,
 			expectedImageSubstrings: []string{
-				":v1.12.1",
+				constants.CurrentKubernetesVersion.String(),
 			},
-			configContents: []byte(dedent.Dedent(`
-				apiVersion: kubeadm.k8s.io/v1beta1
+			configContents: []byte(dedent.Dedent(fmt.Sprintf(`
+				apiVersion: kubeadm.k8s.io/v1beta2
 				kind: ClusterConfiguration
-				kubernetesVersion: v1.12.1
-			`)),
+				kubernetesVersion: %s
+			`, constants.CurrentKubernetesVersion))),
 		},
 		{
 			name:               "use coredns",
@@ -86,7 +88,7 @@ func TestImagesListRunWithCustomConfigPath(t *testing.T) {
 				"coredns",
 			},
 			configContents: []byte(dedent.Dedent(fmt.Sprintf(`
-				apiVersion: kubeadm.k8s.io/v1beta1
+				apiVersion: kubeadm.k8s.io/v1beta2
 				kind: ClusterConfiguration
 				kubernetesVersion: %s
 			`, constants.MinimumControlPlaneVersion))),
@@ -106,10 +108,8 @@ func TestImagesListRunWithCustomConfigPath(t *testing.T) {
 				t.Fatalf("Failed writing a config file: %v", err)
 			}
 
-			i, err := NewImagesList(configFilePath, &kubeadmapiv1beta1.InitConfiguration{
-				ClusterConfiguration: kubeadmapiv1beta1.ClusterConfiguration{
-					KubernetesVersion: dummyKubernetesVersion,
-				},
+			i, err := NewImagesList(configFilePath, &kubeadmapiv1beta2.ClusterConfiguration{
+				KubernetesVersion: dummyKubernetesVersion,
 			})
 			if err != nil {
 				t.Fatalf("Failed getting the kubeadm images command: %v", err)
@@ -135,49 +135,41 @@ func TestImagesListRunWithCustomConfigPath(t *testing.T) {
 func TestConfigImagesListRunWithoutPath(t *testing.T) {
 	testcases := []struct {
 		name           string
-		cfg            kubeadmapiv1beta1.InitConfiguration
+		cfg            kubeadmapiv1beta2.ClusterConfiguration
 		expectedImages int
 	}{
 		{
 			name:           "empty config",
 			expectedImages: defaultNumberOfImages,
-			cfg: kubeadmapiv1beta1.InitConfiguration{
-				ClusterConfiguration: kubeadmapiv1beta1.ClusterConfiguration{
-					KubernetesVersion: dummyKubernetesVersion,
-				},
+			cfg: kubeadmapiv1beta2.ClusterConfiguration{
+				KubernetesVersion: dummyKubernetesVersion,
 			},
 		},
 		{
 			name: "external etcd configuration",
-			cfg: kubeadmapiv1beta1.InitConfiguration{
-				ClusterConfiguration: kubeadmapiv1beta1.ClusterConfiguration{
-					Etcd: kubeadmapiv1beta1.Etcd{
-						External: &kubeadmapiv1beta1.ExternalEtcd{
-							Endpoints: []string{"https://some.etcd.com:2379"},
-						},
+			cfg: kubeadmapiv1beta2.ClusterConfiguration{
+				Etcd: kubeadmapiv1beta2.Etcd{
+					External: &kubeadmapiv1beta2.ExternalEtcd{
+						Endpoints: []string{"https://some.etcd.com:2379"},
 					},
-					KubernetesVersion: dummyKubernetesVersion,
 				},
+				KubernetesVersion: dummyKubernetesVersion,
 			},
 			expectedImages: defaultNumberOfImages - 1,
 		},
 		{
 			name: "coredns enabled",
-			cfg: kubeadmapiv1beta1.InitConfiguration{
-				ClusterConfiguration: kubeadmapiv1beta1.ClusterConfiguration{
-					KubernetesVersion: dummyKubernetesVersion,
-				},
+			cfg: kubeadmapiv1beta2.ClusterConfiguration{
+				KubernetesVersion: dummyKubernetesVersion,
 			},
 			expectedImages: defaultNumberOfImages,
 		},
 		{
 			name: "kube-dns enabled",
-			cfg: kubeadmapiv1beta1.InitConfiguration{
-				ClusterConfiguration: kubeadmapiv1beta1.ClusterConfiguration{
-					KubernetesVersion: dummyKubernetesVersion,
-					DNS: kubeadmapiv1beta1.DNS{
-						Type: kubeadmapiv1beta1.KubeDNS,
-					},
+			cfg: kubeadmapiv1beta2.ClusterConfiguration{
+				KubernetesVersion: dummyKubernetesVersion,
+				DNS: kubeadmapiv1beta2.DNS{
+					Type: kubeadmapiv1beta2.KubeDNS,
 				},
 			},
 			expectedImages: defaultNumberOfImages + 2,
@@ -226,17 +218,17 @@ func TestImagesPull(t *testing.T) {
 		LookPathFunc: func(cmd string) (string, error) { return "/usr/bin/docker", nil },
 	}
 
-	containerRuntime, err := utilruntime.NewContainerRuntime(&fexec, kubeadmapiv1beta1.DefaultCRISocket)
+	containerRuntime, err := utilruntime.NewContainerRuntime(&fexec, constants.DefaultDockerCRISocket)
 	if err != nil {
 		t.Errorf("unexpected NewContainerRuntime error: %v", err)
 	}
 
 	images := []string{"a", "b", "c", "d", "a"}
-	ip := NewImagesPull(containerRuntime, images)
-
-	err = ip.PullAll()
-	if err != nil {
-		t.Fatalf("expected nil but found %v", err)
+	for _, image := range images {
+		if err := containerRuntime.PullImage(image); err != nil {
+			t.Fatalf("expected nil but found %v", err)
+		}
+		fmt.Printf("[config/images] Pulled %s\n", image)
 	}
 
 	if fcmd.CombinedOutputCalls != len(images) {
@@ -246,8 +238,8 @@ func TestImagesPull(t *testing.T) {
 
 func TestMigrate(t *testing.T) {
 	cfg := []byte(dedent.Dedent(`
-		# This is intentionally testing an old API version and the old kind naming and making sure the output is correct
-		apiVersion: kubeadm.k8s.io/v1alpha3
+		# This is intentionally testing an old API version. Sometimes this may be the latest version (if no old configs are supported).
+		apiVersion: kubeadm.k8s.io/v1beta1
 		kind: InitConfiguration
 	`))
 	configFile, cleanup := tempConfig(t, cfg)
@@ -262,8 +254,10 @@ func TestMigrate(t *testing.T) {
 	if err := command.Flags().Set("new-config", newConfigPath); err != nil {
 		t.Fatalf("failed to set new-config flag")
 	}
-	command.Run(nil, nil)
-	if _, err := configutil.ConfigFileAndDefaultsToInternalConfig(newConfigPath, &kubeadmapiv1beta1.InitConfiguration{}); err != nil {
+	if err := command.RunE(nil, nil); err != nil {
+		t.Fatalf("Error from running the migrate command: %v", err)
+	}
+	if _, err := configutil.LoadInitConfigurationFromFile(newConfigPath); err != nil {
 		t.Fatalf("Could not read output back into internal type: %v", err)
 	}
 }
@@ -357,7 +351,9 @@ func TestNewCmdConfigPrintActionDefaults(t *testing.T) {
 			if err := command.Flags().Set("component-configs", test.componentConfigs); err != nil {
 				t.Fatalf("failed to set component-configs flag")
 			}
-			command.Run(nil, nil)
+			if err := command.RunE(nil, nil); err != nil {
+				t.Fatalf("Error from running the print command: %v", err)
+			}
 
 			gvkmap, err := kubeadmutil.SplitYAMLDocuments(output.Bytes())
 			if err != nil {
